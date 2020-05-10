@@ -1,0 +1,24 @@
+{
+  "name": "mind-ar-js-new",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "asbuild:untouched": "asc ./node_modules/as-bind/lib/assembly/as-bind.ts assembly/index.ts -b build/untouched.wasm -t build/untouched.wat --validate --sourceMap --debug",
+    "asbuild:optimized": "asc ./node_modules/as-bind/lib/assembly/as-bind.ts assembly/index.ts -b build/optimized.wasm -t build/optimized.wat --validate --sourceMap --optimize",
+    "asbuild": "npm run asbuild:untouched && npm run asbuild:optimized",
+    "test": "npm run asbuild:untouched && node tests/index.js",
+    "test-optimized": "npm run asbuild:optimized && node tests/index.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@assemblyscript/loader": "^0.9.4",
+    "as-bind": "^0.3.1",
+    "image-js": "^0.21.9"
+  },
+  "devDependencies": {
+    "assemblyscript": "^0.9.4",
+    "onchange": "^7.0.2"
+  }
+}
