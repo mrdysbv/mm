@@ -4,6 +4,15 @@ const compute = (options) => {
   const {v1, v2} = options;
   let d = 0;
   for (let i = 0; i < v1.length; i++) {
+    d += (v1[i] !== v2[i]? 1: 0);
+  }
+  return d;
+}
+
+const _compute = (options) => {
+  const {v1, v2} = options;
+  let d = 0;
+  for (let i = 0; i < v1.length; i++) {
     let x = (v1[i] ^ v2[i]) >>> 0;
     d += bitCount(x);
   }

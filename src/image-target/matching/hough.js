@@ -34,8 +34,10 @@ const computeHoughMatches = (options) => {
   const medianProjectedDim = projectedDims[ Math.floor(projectedDims.length/2) - (projectedDims.length%2==0?1:0) -1 ];
 
   const binSize = 0.25 * medianProjectedDim;
-  const numXBins = Math.max(5, Math.ceil((maxX - minX) / binSize));
-  const numYBins = Math.max(5, Math.ceil((maxY - minY) / binSize));
+  //const numXBins = Math.max(5, Math.ceil((maxX - minX) / binSize));
+  //const numYBins = Math.max(5, Math.ceil((maxY - minY) / binSize));
+  const numXBins = 5;
+  const numYBins = 5;
 
   const numXYBins = numXBins * numYBins;
   const numXYAngleBins = numXYBins * numAngleBins;
@@ -106,6 +108,8 @@ const computeHoughMatches = (options) => {
       maxVoteIndex = index;
     }
   });
+
+  console.log("maxvote", maxVoteIndex, maxVotes);
 
   if (maxVotes < 3) return [];
 

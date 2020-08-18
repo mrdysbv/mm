@@ -1,5 +1,5 @@
 const {build: hierarchicalClusteringBuild} = require('./hierarchical-clustering.js');
-const {match} = require('./matching');
+const {match, quickMatch} = require('./matching');
 
 const PYRAMID_NUM_SCALES_PER_OCTAVES = 3;
 const PYRAMID_MIN_SIZE = 8;
@@ -7,6 +7,7 @@ const PYRAMID_MIN_SIZE = 8;
 class Matcher {
   constructor(matchingData) {
     this.keyframes = matchingData;
+    this.lastMactched = false;
   }
 
   matchDetection(queryWidth, queryHeight, featurePoints) {
@@ -24,7 +25,14 @@ class Matcher {
         descriptors: featurePoints[i].descriptors
       })
     }
-    const result = match({keyframes: this.keyframes, querypoints: querypoints, querywidth: queryWidth, queryheight: queryHeight});
+
+    let result = null;
+    if (this.lastMatched) {
+      result = quickMatch({keyframes: this.keyframes, querypoints: querypoints, querywidth: queryWidth, queryheight: queryHeight});
+    } else {
+      result = match({keyframes: this.keyframes, querypoints: querypoints, querywidth: queryWidth, queryheight: queryHeight});
+    }
+    this.lastMatched = result !== null;
     if (result === null) return null;
 
     const screenCoords = [];

@@ -125,10 +125,8 @@ const FREAK_CONPARISON_COUNT = (FREAKPOINTS.length-1) * (FREAKPOINTS.length) / 2
 //   any better way to utilize all 32 bits?
 const FREAK_24BIT_DESCRIPTOR_COUNT = Math.ceil(FREAK_CONPARISON_COUNT / 24); // ceil(666/24) = 28 numbers
 
-let gpu = null;
-
 class Detector {
-  constructor(width, height) {
+  constructor(width, height, gpu) {
     this.width = width;
     this.height = height;
 
@@ -141,15 +139,14 @@ class Detector {
     this.numOctaves = numOctaves;
     this.kernels = [];
     //this.gpu = new GPU({mode: 'webgl'});
-    this.gpu = new GPU();
-    gpu = this.gpu;
-
+    //this.gpu = new GPU();
+    this.gpu = gpu;
     this.inputKernel = null;
   }
 
   detect(input) {
     if (this.inputKernel === null) {
-      this.inputKernel = gpu.createKernel(function(inputFrame) {
+      this.inputKernel = this.gpu.createKernel(function(inputFrame) {
         const pixel = inputFrame[this.constants.height-1-Math.floor(this.thread.x / this.constants.width)][this.thread.x % this.constants.width];
         return (pixel[0] + pixel[1] + pixel[2]) * 255 / 3;
       }, {
@@ -284,6 +281,8 @@ class Detector {
 
     // combine all needed data and return to CPU together
     const combinedExtremas = this._combine(prunedExtremas, extremaAngles, freakDescriptors);
+
+    const freakDescriptorsArr = freakDescriptors.toArray();
     if (typeof window !== 'undefined' && window.DEBUG_TIME) {
       console.log('exec time until combine', new Date().getTime() - _start);
     }
@@ -301,6 +300,16 @@ class Detector {
         if (combinedExtremasArr[i][j][0] !== 0) {
           const ext = combinedExtremasArr[i][j];
 
+          featurePoints.push({
+            score: ext[0],
+            sigma: ext[1],
+            x: ext[2],
+            y: ext[3],
+            angle: ext[4],
+            descriptors: freakDescriptorsArr[i][j],
+          });
+
+          /*
           const descBit24 = ext.slice(5);
           // convert 24-bits encoded to 32-bits encoded. i.e. every 4 numbers to 3 numbers
           //  [24 + 8] [16 + 16] [8 + 24]
@@ -324,8 +333,9 @@ class Detector {
             x: ext[2],
             y: ext[3],
             angle: ext[4],
-            descriptors: descriptors
+            descriptors: descriptors,
           });
+          */
         }
       }
     }
@@ -333,13 +343,15 @@ class Detector {
     if (typeof window !== 'undefined' && window.DEBUG_TIME) {
       console.log('exec time until feature points and descriptors', new Date().getTime() - _start);
     }
+
+    return {featurePoints, combinedExtremas, freakDescriptors};
     return featurePoints;
   }
 
   _initializePrune() {
     if (this.kernelIndex === this.kernels.length) {
       this.kernels.push(
-        gpu.createKernel(function() {
+        this.gpu.createKernel(function() {
           return 0;
         }, {
           output: [5, MAX_FEATURES_PER_BUCKET, NUM_BUCKETS], // first dimension: [score, sigma, x, y, dogIndex]
@@ -357,7 +369,7 @@ class Detector {
   _combine(prunedExtremas, extremaAngles, freakDescriptors) {
     if (this.kernelIndex === this.kernels.length) {
       this.kernels.push(
-        gpu.createKernel(function(prunedExtremas, extremaAngles, freakDescriptors) {
+        this.gpu.createKernel(function(prunedExtremas, extremaAngles, freakDescriptors) {
           if (this.thread.x < 4) {
             return prunedExtremas[this.thread.z][this.thread.y][this.thread.x];
           }
@@ -379,7 +391,7 @@ class Detector {
   _initializeHistograms() {
     if (this.kernelIndex === this.kernels.length) {
       this.kernels.push(
-        gpu.createKernel(function() {
+        this.gpu.createKernel(function() {
           return 0;
         }, {
           output: [ORIENTATION_NUM_BINS, MAX_FEATURES_PER_BUCKET, NUM_BUCKETS],
@@ -395,7 +407,7 @@ class Detector {
   _computeOrientationHistograms(extremaHistograms, gradientResult, prunedExtremas, dogIndex, width, height) {
     if (this.kernelIndex === this.kernels.length) {
       this.kernels.push(
-        gpu.createKernel(function(extremaHistograms, gradientMags, gradientAngles, prunedExtremas) {
+        this.gpu.createKernel(function(extremaHistograms, gradientMags, gradientAngles, prunedExtremas) {
           const dogIndex = this.constants.dogIndex;
           const bucketPointIndex = this.thread.y;
           const bucketIndex = this.thread.z;
@@ -503,7 +515,7 @@ class Detector {
       const subkernels = [];
       for (let k = 0; k < ORIENTATION_SMOOTHING_ITERATIONS; k++) {
         subkernels.push(
-          gpu.createKernel(function(histograms) {
+          this.gpu.createKernel(function(histograms) {
             const numBins = this.constants.numBins;
             // The histogram is smoothed with a Gaussian, with sigma = 1
             return 0.274068619061197 * histograms[this.thread.z][this.thread.y][(this.thread.x - 1 + numBins) % numBins]
@@ -528,7 +540,7 @@ class Detector {
   _computeExtremaAngles(histograms) {
     if (this.kernelIndex === this.kernels.length) {
       this.kernels.push(
-        gpu.createKernel(function(histograms) {
+        this.gpu.createKernel(function(histograms) {
           const numBins = this.constants.numBins;
 
           let maxIndex = 0;
@@ -600,7 +612,7 @@ class Detector {
       const subkernels = [];
 
       subkernels.push( //dummy
-        gpu.createKernel(function() {
+        this.gpu.createKernel(function() {
           return -1;
         }, {
           output: [1, NUM_BUCKETS],
@@ -614,7 +626,7 @@ class Detector {
       //  if maxIndex >= 0: it means coming from the new extremas. the position is the pixel index
       for (let i = 0; i < MAX_FEATURES_PER_BUCKET; i++) {
         subkernels.push(
-          gpu.createKernel(function(orders, prunedExtremas, extremaScores) {
+          this.gpu.createKernel(function(orders, prunedExtremas, extremaScores) {
             const bucketPointIndex = this.thread.x;
             const bucketIndex = this.thread.y;
             const orderIndex = this.constants.orderIndex;
@@ -678,7 +690,7 @@ class Detector {
         )
       }
       subkernels.push(
-        gpu.createKernel(function(orders, prunedExtremas, extremaScores, extremaSigmas, extremaXs, extremaYs) {
+        this.gpu.createKernel(function(orders, prunedExtremas, extremaScores, extremaSigmas, extremaXs, extremaYs) {
           const dogIndex = this.constants.dogIndex;
           const propertyIndex = this.thread.x;
           const bucketPointIndex = this.thread.y;
@@ -718,7 +730,7 @@ class Detector {
   _computeGradients(image) {
     if (this.kernelIndex === this.kernels.length) {
       this.kernels.push(
-        gpu.createKernelMap({
+        this.gpu.createKernelMap({
           saveMag: function(a) {return a}
         },
         function(data) {
@@ -773,7 +785,7 @@ class Detector {
     if (this.kernelIndex === this.kernels.length) {
       const subkernels = [];
       subkernels.push(
-        gpu.createKernel(function(freakResult) {
+        this.gpu.createKernel(function(freakResult) {
           const numFreakPoints = this.constants.numFreakPoints;
           const x = this.thread.x;
 
@@ -809,7 +821,7 @@ class Detector {
       )
 
       subkernels.push(
-        gpu.createKernel(function(freakValues) {
+        this.gpu.createKernel(function(freakValues) {
           const comparisonCount = this.constants.comparisonCount;
           const x = this.thread.x;
           const start = 24 * x;
@@ -838,8 +850,11 @@ class Detector {
     }
     const subkernels = this.kernels[this.kernelIndex++];
     const result = subkernels[0](freakResult);
-    const result2 = subkernels[1](result);
-    return result2;
+    return result;
+
+    // pack descriptors
+    //const result2 = subkernels[1](result);
+    //return result2;
   }
 
   _computeExtremaFreak(pyramidImages, gaussianNumOctaves, prunedExtremas, prunedExtremasAngles) {
@@ -847,7 +862,7 @@ class Detector {
       const subkernels = [];
 
       subkernels.push(
-        gpu.createKernelMap({
+        this.gpu.createKernelMap({
           saveXp: function(a) {return a},
           saveYp: function(a) {return a}
         },
@@ -934,7 +949,7 @@ class Detector {
       )
 
       subkernels.push(
-        gpu.createKernel(function() {
+        this.gpu.createKernel(function() {
           return 0;
         }, {
           output: [FREAKPOINTS.length, MAX_FEATURES_PER_BUCKET, NUM_BUCKETS],
@@ -944,7 +959,7 @@ class Detector {
 
       for (let i = 0; i < pyramidImages.length; i++) {
         subkernels.push(
-          gpu.createKernel(function(freakResult, imageData, xps, yps, imageIndexes) {
+          this.gpu.createKernel(function(freakResult, imageData, xps, yps, imageIndexes) {
             const gaussianIndex = this.constants.gaussianIndex;
             const width = this.constants.width;
             const height = this.constants.height;
@@ -1006,7 +1021,7 @@ class Detector {
     if (this.kernelIndex === this.kernels.length) {
       this.kernels2 = [];
       this.kernels2.push(
-        gpu.createKernelMap([
+        this.gpu.createKernelMap([
           function saveX(a) {return a}
         ],
         function(data0, data1, data2, startI, startJ, endI, endJ) {
@@ -1035,7 +1050,7 @@ class Detector {
         //      score can be positive (maxima) or negative (minima)
         //  2. x, y: the effective x, y coordinate in the original image
         //  3. sigma: the effective sigma in the original image (I'm not sure what sigma is. any educational reference?)
-        gpu.createKernelMap({
+        this.gpu.createKernelMap({
           saveSigma: function(a) {return a;},
           saveX: function(a) {return a;},
           saveY: function(a) {return a;}
@@ -1194,7 +1209,7 @@ class Detector {
 
     if (this.kernelIndex === this.kernels.length) {
       this.kernels.push(
-        gpu.createKernel(function(data) {
+        this.gpu.createKernel(function(data) {
           const width = this.constants.width;
           const srcWidth = this.constants.srcWidth;
           const j = Math.floor(this.thread.x / width);
@@ -1220,7 +1235,7 @@ class Detector {
 
     if (this.kernelIndex === this.kernels.length) {
       this.kernels.push(
-        gpu.createKernel(function(data) {
+        this.gpu.createKernel(function(data) {
           const width = this.constants.width;
           const height = this.constants.height;
 
@@ -1255,7 +1270,7 @@ class Detector {
   // 4th order binomail filter
   _applyFilter(image) {
     if (this.kernelIndex === this.kernels.length) {
-      const f1 = gpu.createKernel(function(data) {
+      const f1 = this.gpu.createKernel(function(data) {
         const width = this.constants.width;
         const j = Math.floor(this.thread.x / width);
         const i = this.thread.x % width;
@@ -1272,7 +1287,7 @@ class Detector {
         pipeline: true
       });
 
-      const f2 = gpu.createKernel(function(data) {
+      const f2 = this.gpu.createKernel(function(data) {
         const width = this.constants.width;
         const height = this.constants.height;
         const j = Math.floor(this.thread.x / width);
@@ -1299,7 +1314,7 @@ class Detector {
   _differenceImageBinomial(image1, image2) {
     if (this.kernelIndex === this.kernels.length) {
       this.kernels.push(
-        gpu.createKernel(function(data1, data2) {
+        this.gpu.createKernel(function(data1, data2) {
           return data1[this.thread.x] - data2[this.thread.x];
         }, {
           output: [image1.width * image1.height],

@@ -22,12 +22,19 @@
         const proj = controller.getProjectionMatrix();
         console.log("proj", proj);
 
-        await controller.addImageTargets('./assets/cards1_7.mind');
+        //await controller.addImageTargets('./assets/cards1_7.mind');
+        await controller.addImageTargets('../tests/cards7.mind');
 
         const queryImage = await loadImage('../tests/card7_2.png');
-        const result = await controller.process(queryImage);
-        for (let i = 0; i < result.length; i++) {
-          console.log("result", JSON.stringify(result[i]));
+        const queryImage2 = await loadImage('../tests/card7_3.png');
+
+        //for (let i = 0; i < 5; i++) {
+        for (let i = 0; i < 1; i++) {
+          console.log("process ", i);
+          const result = await controller.process( i % 2 === 0? queryImage: queryImage2);
+          for (let i = 0; i < result.length; i++) {
+            console.log("result", JSON.stringify(result[i]));
+          }
         }
       }
 

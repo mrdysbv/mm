@@ -3,6 +3,7 @@ const {compute: hammingCompute} = require('./hamming-distance.js');
 const {computeHoughMatches} = require('./hough.js');
 const {computeHomography} = require('./homography.js');
 const {multiplyPointHomographyInhomogenous, matrixInverse33} = require('../utils/geometry.js');
+const {estimateHomography} = require('../icp/estimate_homography.js');
 
 const INLIER_THRESHOLD = 3;
 //const MIN_NUM_INLIERS = 8;  //default
@@ -10,11 +11,98 @@ const MIN_NUM_INLIERS = 6;
 const CLUSTER_MAX_POP = 8;
 const HAMMING_THRESHOLD = 0.7;
 
+const lastHomographies = [];
+let lastKeyframeIndex = null;
+
+const quickMatch = ({keyframes, querypoints, querywidth, queryheight}) => {
+  if (lastKeyframeIndex === null) return null;
+
+  const H = lastHomographies[lastKeyframeIndex];
+  const keyframe = keyframes[lastKeyframeIndex];
+  const keypoints = keyframe.points;
+  const HInv = matrixInverse33(H, 0.00001);
+  //console.log("quick match", lastKeyframeIndex, H, HInv);
+
+  const dThreshold2 = 10 * 10;
+  const matches2 = [];
+  for (let j = 0; j < querypoints.length; j++) {
+    const querypoint = querypoints[j];
+    const mapquerypoint = multiplyPointHomographyInhomogenous([querypoint.x2D, querypoint.y2D], HInv);
+
+    let bestIndex = -1;
+    let bestD1 = Number.MAX_SAFE_INTEGER;
+    let bestD2 = Number.MAX_SAFE_INTEGER;
+
+    for (let k = 0; k < keypoints.length; k++) {
+      const keypoint = keypoints[k];
+      if (keypoint.maxima != querypoint.maxima) continue;
+
+      // check distance threshold
+      const d2 = (keypoint.x2D - mapquerypoint[0]) * (keypoint.x2D - mapquerypoint[0])
+                + (keypoint.y2D - mapquerypoint[1]) * (keypoint.y2D - mapquerypoint[1]);
+      if (d2 > dThreshold2) continue;
+
+      const d = hammingCompute({v1: keypoint.descriptors, v2: querypoint.descriptors});
+      if (d < bestD1) {
+        bestD2 = bestD1;
+        bestD1 = d;
+        bestIndex = k;
+      } else if (d < bestD2) {
+        bestD2 = d;
+      }
+    }
+
+    if (bestIndex !== -1 && (bestD2 === Number.MAX_SAFE_INTEGER || (1.0 * bestD1 / bestD2) < HAMMING_THRESHOLD)) {
+      matches2.push({querypointIndex: j, keypointIndex: bestIndex});
+    }
+  }
+
+  const srcPoints2 = [];
+  const dstPoints2 = [];
+  for (let i = 0; i < matches2.length; i++) {
+    const querypoint = querypoints[matches2[i].querypointIndex];
+    const keypoint = keypoints[matches2[i].keypointIndex];
+    srcPoints2.push([ keypoint.x2D, keypoint.y2D ]);
+    dstPoints2.push([ querypoint.x2D, querypoint.y2D ]);
+  }
+
+  const H2 = computeHomography({
+    srcPoints: srcPoints2,
+    dstPoints: dstPoints2,
+    keyframe
+  });
+
+  if (H2 === null) return null;
+
+  const inlierMatches2 = _findInlierMatches({
+    querypoints,
+    keypoints: keypoints,
+    H: H2,
+    matches: matches2,
+    threshold: INLIER_THRESHOLD
+  });
+
+  if (inlierMatches2.length < MIN_NUM_INLIERS) {
+    return null;
+  }
+
+  const result = {
+    keyframeIndex: lastKeyframeIndex,
+    matches: inlierMatches2,
+    H: H,
+  }
+  console.log("matches2", matches2, inlierMatches2);
+  return result;
+};
+
 // match list of querpoints against pre-built list of keyframes
 const match = ({keyframes, querypoints, querywidth, queryheight}) => {
   let result = null;
 
+  console.log("mathc query", querypoints);
+
   for (let i = 0; i < keyframes.length; i++) {
+    if (i > 0) break;
     logTime("sm"+i);
 
     const keyframe = keyframes[i];
@@ -27,7 +115,40 @@ const match = ({keyframes, querypoints, querywidth, queryheight}) => {
       var _start = new Date().getTime();
     }
 
-    const matches = [];
+    let matches = [];
+
+    const allHamming = [];
+    for (let j = 0; j < querypoints.length; j++) {
+      const querypoint = querypoints[j];
+      allHamming.push([]);
+      for (let k = 0; k < keypoints.length; k++) {
+        const keypoint = keypoints[k];
+        let d = 10000;
+        if (keypoint.maxima == querypoint.maxima) {
+          d = hammingCompute({v1: keypoint.descriptors, v2: querypoint.descriptors});
+        }
+        allHamming[j].push(d);
+      }
+    }
+    console.log("all hamming", allHamming);
+
+    const anotherMatches = [];
+    for (let j = 0; j < querypoints.length; j++) {
+      let best1 = -1;
+      let best2 = -1;
+      for (let k = 0; k < keypoints.length; k++) {
+        if (best1 === -1 || allHamming[j][k] < allHamming[j][best1]) {
+          best2 = best1;
+          best1 = k;
+        } else if (best2 === -1 || allHamming[j][k] < allHamming[j][best2]) {
+          best2 = k;
+        }
+      }
+      if (best1 !== -1 && best2 !== -1 && (allHamming[j][best1] / allHamming[j][best2]) < HAMMING_THRESHOLD) {
+        anotherMatches.push({querypointIndex: j, keypointIndex: best1});
+      }
+    }
+
     for (let j = 0; j < querypoints.length; j++) {
       const rootNode = keyframe.pointsCluster.rootNode;
       const querypoint = querypoints[j];
@@ -72,6 +193,10 @@ const match = ({keyframes, querypoints, querywidth, queryheight}) => {
         window.debug.queryMatchIndex += 1;
       }
     }
+
+    console.log("compare matches", matches, anotherMatches);
+
+    matches = anotherMatches;
 
     logTime("em"+i);
 
@@ -143,6 +268,17 @@ const match = ({keyframes, querypoints, querywidth, queryheight}) => {
       dstPoints,
       keyframe,
     });
+
+    /*
+    console.log("homography", H);
+    const screenCoords = [];
+    const worldCoords = [];
+    for (let i = 0; i < srcPoints.length; i++) {
+      worldCoords.push({x: srcPoints[i][0], y: srcPoints[i][1]});
+      screenCoords.push({x: dstPoints[i][0], y: dstPoints[i][1]});
+    }
+    const compareH = estimateHomography({screenCoords, worldCoords});
+    */
 
     if (typeof window !== 'undefined' && window.DEBUG_TIME) {
       console.log('exec time until first Homography: ', new Date().getTime() - _start);
@@ -312,7 +448,11 @@ const match = ({keyframes, querypoints, querywidth, queryheight}) => {
       continue;
     }
 
+    lastHomographies[i] = H2;
+
     if (result === null || result.matches.length < inlierMatches2.length) {
+      lastKeyframeIndex = i;
+
       result = {
         keyframeIndex: i,
         matches: inlierMatches2,
@@ -384,5 +524,6 @@ const _findInlierMatches = (options) => {
 }
 
 module.exports = {
-  match
+  match,
+  quickMatch
 }

@@ -68,6 +68,7 @@ const estimateHomography = ({screenCoords, worldCoords, projectionTransform}) =>
     [C[3], C[4], C[5]],
     [C[6], C[7], 1]
   ]);
+  console.log("estimate H", H);
 
   const K = new Matrix(projectionTransform);
   const KInv = inverse(K);

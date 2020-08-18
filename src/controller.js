@@ -2,12 +2,15 @@ const {ImageTarget} = require('./image-target/index.js');
 const {Detector} = require('./image-target/detectorGPU/detector.js');
 //const {Detector} = require('./image-target/detectorCPU/detector.js');
 const {Compiler} = require('./compiler.js');
+const {GPU} = require('gpu.js');
 
 class Controller {
   constructor(inputWidth, inputHeight) {
+    this.gpu = new GPU();
+
     this.inputWidth = inputWidth;
     this.inputHeight = inputHeight;
-    this.detector = new Detector(this.inputWidth, this.inputHeight);
+    this.detector = new Detector(this.inputWidth, this.inputHeight, this.gpu);
     this.imageTargets = [];
     this.trackingIndex = -1;
 
@@ -53,6 +56,7 @@ class Controller {
           targetImage: dataList[i].targetImage,
           matchingData: dataList[i].matchingData,
           trackingData: dataList[i].trackingData,
+          gpu: this.gpu,
         });
         imageTarget.setupQuery(this.inputWidth, this.inputHeight);
         this.imageTargets.push(imageTarget);
@@ -65,7 +69,7 @@ class Controller {
   dummyRun(input) {
     this.detector.detect(input);
     for (let i = 0; i < this.imageTargets.length; i++) {
-      this.imageTargets[i].dummyRun(input);
+      //this.imageTargets[i].dummyRun(input);
     }
   }
 
@@ -78,8 +82,23 @@ class Controller {
     return dimensions;
   }
 
-  // input is either HTML video or HTML image
   process(input) {
+    const result = [];
+    //let featurePoints = this.detector.detect(input);
+    let {featurePoints, combinedExtremas, freakDescriptors} = this.detector.detect(input);
+    for (let i = 0; i < this.imageTargets.length; i++) {
+      const imageTarget = this.imageTargets[i];
+      const modelViewTransform = imageTarget.match(featurePoints, combinedExtremas, freakDescriptors);
+      const worldMatrix = modelViewTransform === null? null: _glModelViewMatrix({modelViewTransform});
+      result.push({
+        worldMatrix: worldMatrix
+      })
+    }
+    return result;
+  }
+
+  // input is either HTML video or HTML image
+  _process(input) {
     logTime("engine process");
 
     if (this.trackingIndex === -1) {
