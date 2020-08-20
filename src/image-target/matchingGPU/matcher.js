@@ -10,7 +10,12 @@ const HOUGH_NUM_ANGLE_BINS = 12;
 const HOUGH_NUM_SCALE_BINS = 10;
 const HOUGH_NUM_XY_BINS = 5;
 
-const HOMOGRAPHY_DEFAULT_NUM_HYPOTHESES = 1024;
+//const HOMOGRAPHY_DEFAULT_NUM_HYPOTHESES = 1024;
+const HOMOGRAPHY_DEFAULT_NUM_HYPOTHESES = 1064;
+//const HOMOGRAPHY_DEFAULT_MAX_TRIALS = 1064;
+//
+
+const HOMOGRAPHY_DEFAULT_CAUCHY_SCALE = 0.01;
 
 // first dimension of querypoints|keypoints: [isMaxima, x, y, scale, angle, descriptors x 666]
 
@@ -68,60 +73,264 @@ class Matcher {
         console.log("debug hough Matches", debugMatches);
       }
 
-      this._computeHomography(keypoints, querypoints, houghMatches);
-      break;
-
-      const houghMatchesPairs = [];
-      for (let j = 0; j < houghMatchesArr.length; j++) {
-        for (let k = 0; k < houghMatchesArr[j].length; k++) {
-          if (houghMatchesArr[j][k] !== -1) {
-            houghMatchesPairs.push({querypoint: combinedExtremasArr[j][k], keyIndex: houghMatchesArr[j][k]});
-          }
-        }
-      }
-      console.log("houghMatchesPairs: ", houghMatchesPairs);
-      const perm = [];
-      for (let i = 0; i < houghMatchesPairs.length; i++) {
-        perm[i] = i;
-      }
-      const randomizer = createRandomizer();
-      randomizer.arrayShuffle({arr: perm, sampleSize: perm.length});
-
-      for (let i = 0; i < HOMOGRAPHY_DEFAULT_NUM_HYPOTHESES; i++) {
-        randomizer.arrayShuffle({arr: perm, sampleSize: 4});
-
-        const srcPoints = [
-          [keypointsArr[houghMatchesPairs[perm[0]].keyIndex][0], keypointsArr[houghMatchesPairs[perm[0]].keyIndex][1]],
-          [keypointsArr[houghMatchesPairs[perm[1]].keyIndex][0], keypointsArr[houghMatchesPairs[perm[1]].keyIndex][1]],
-          [keypointsArr[houghMatchesPairs[perm[2]].keyIndex][0], keypointsArr[houghMatchesPairs[perm[2]].keyIndex][1]],
-          [keypointsArr[houghMatchesPairs[perm[3]].keyIndex][0], keypointsArr[houghMatchesPairs[perm[3]].keyIndex][1]],
-        ];
-        const dstPoints = [
-          [houghMatchesPairs[perm[0]].querypoint[2], houghMatchesPairs[perm[0]].querypoint[3]],
-          [houghMatchesPairs[perm[1]].querypoint[2], houghMatchesPairs[perm[1]].querypoint[3]],
-          [houghMatchesPairs[perm[2]].querypoint[2], houghMatchesPairs[perm[2]].querypoint[3]],
-          [houghMatchesPairs[perm[3]].querypoint[2], houghMatchesPairs[perm[3]].querypoint[3]],
-        ];
-        console.log("compute homo", srcPoints, dstPoints);
-
-        break;
-      }
+      const homography = this._computeHomography(keypoints, querypoints, houghMatches, this.keyframes[i].width, this.keyframes[i].height);
     }
   }
 
-  _computeHomography(keypoints, querypoints, matches) {
+  _computeHomography(keypoints, querypoints, houghMatches, keyWidth, keyHeight) {
+    const queryIndexes = this._generateRandomIndexes(houghMatches);
+    console.log("queryINdexes", queryIndexes.toArray());
+
+    const valid1 = this._checkPointsValid(keypoints, querypoints, houghMatches, queryIndexes);
+    console.log("valid1: ", valid1.toArray());
+
+    const homographies = this._computeAllHomographies(keypoints, querypoints, houghMatches, queryIndexes, valid1);
+
+    const valid2 = this._checkHomographiesValid(homographies, keyWidth, keyHeight, valid1);
+    console.log("valid2: ", valid2.toArray());
+
+    const costs = this._computeHomographiesCosts(homographies, keypoints, querypoints, houghMatches, valid2);
+    console.log("h cost", costs.toArray());
+
+    const finalH = this._getBestHomography(homographies, costs, valid1, valid2);
+    console.log("final H", finalH.toArray());
+
+    return finalH;
+  }
+
+  _getBestHomography(homographies, costs) {
     if (this.kernelIndex === this.kernels.length) {
-      // TODO: random 4 indexes for each trial
+      // sum cost for each homography
+      const k = this.gpu.createKernel(function(costs) {
+        const {numHypothesis} = this.constants;
+
+        let bestIndex = -1;
+        let bestScore = 10000000;
+        for (let i = 0; i < numHypothesis; i++) {
+          if (costs[i] < costs[bestIndex]) {
+            bestIndex = i;
+          }
+        }
+        return bestIndex;
+      }, {
+        constants: {numHypothesis: HOMOGRAPHY_DEFAULT_NUM_HYPOTHESES},
+        pipeline: true,
+        output: [1],
+      });
+
+      const k2 = this.gpu.createKernel(function(homographies, bestIndex) {
+        if (bestIndex[0] === -1) return -1;
+        return homographies[bestIndex[0]][this.thread.x];
+      }, {
+        pipeline: true,
+        output: [8],
+      });
+
+      this.kernels.push([k, k2]);
+    }
+    const kernels = this.kernels[this.kernelIndex++];
+    const result1 = kernels[0](costs);
+    console.log("sumcost", result1.toArray());
+    const result2 = kernels[1](homographies, result1);
+    return result2;
+  }
+
+  _computeHomographiesCosts(homographies, keypoints, querypoints, matches, valid2) {
+    if (this.kernelIndex === this.kernels.length) {
+      const k = this.gpu.createKernel(function(homographies, keypoints, querypoints, matches, valid2) {
+        if (valid2[this.thread.y] === 0) return 10000000; // large number
+
+        if (matches[this.thread.x] === -1) return 0;
+
+        const {oneOverScale2} = this.constants;
+
+        const queryIndex = this.thread.x;
+        const keyIndex = matches[this.thread.x];
+
+        const mapped = multiplyPointHomographyInhomogenous(
+          keypoints[keyIndex][1],
+          keypoints[keyIndex][2],
+          homographies[this.thread.y][0],
+          homographies[this.thread.y][1],
+          homographies[this.thread.y][2],
+          homographies[this.thread.y][3],
+          homographies[this.thread.y][4],
+          homographies[this.thread.y][5],
+          homographies[this.thread.y][6],
+          homographies[this.thread.y][7],
+          1 // normalized homography
+        );
+        const dx = mapped[0] - querypoints[queryIndex][1];
+        const dy = mapped[1] - querypoints[queryIndex][2];
+        const cost = Math.log(1 + (dx*dx + dy*dy) * oneOverScale2);
+        return cost;
+      }, {
+        constants: {oneOverScale2: 1.0 / (HOMOGRAPHY_DEFAULT_CAUCHY_SCALE * HOMOGRAPHY_DEFAULT_CAUCHY_SCALE)},
+        pipeline: true,
+        output: [querypoints.dimensions[1], HOMOGRAPHY_DEFAULT_NUM_HYPOTHESES]
+      });
+
+      // combine costs
+      const k2 = this.gpu.createKernel(function(costs, valid2){
+        if (valid2[this.thread.y] === 0) return 10000000; // large number
+
+        const {queryDimension} = this.constants;
+        let sumCost = 0;
+        for (let i = 0; i < queryDimension; i++) {
+          sumCost += costs[this.thread.x][i];
+        }
+        return sumCost;
+      }, {
+        constants: {queryDimension: querypoints.dimensions[1]},
+        pipeline: true,
+        output: [HOMOGRAPHY_DEFAULT_NUM_HYPOTHESES]
+      });
+      this.kernels.push([k, k2]);
+    }
+    const kernels = this.kernels[this.kernelIndex++];
+    const result1 = kernels[0](homographies, keypoints, querypoints, matches, valid2);
+    console.log("all costs", result1.toArray());
+    const result2 = kernels[1](result1, valid2);
+    return result2;
+  }
+
+  _checkHomographiesValid(homographies, keyWidth, keyHeight, valid1) {
+    // check four corners of keyframe consistent after homography map
+    if (this.kernelIndex === this.kernels.length) {
+      const k = this.gpu.createKernel(function(homographies, valid1) {
+        if (valid1[this.thread.x] === 0) return 0;
+
+        const {keyWidth, keyHeight} = this.constants;
+
+        const xs = [0, keyWidth, keyWidth, 0];
+        const ys = [0, 0, keyHeight, keyHeight];
+        let xps = [-1, -1, -1, -1];
+        let yps = [-1, -1, -1, -1];
+        for (let i = 0; i < 4; i++) {
+          const mapped = multiplyPointHomographyInhomogenous(xs[i], ys[i],
+            homographies[this.thread.x][0],
+            homographies[this.thread.x][1],
+            homographies[this.thread.x][2],
+            homographies[this.thread.x][3],
+            homographies[this.thread.x][4],
+            homographies[this.thread.x][5],
+            homographies[this.thread.x][6],
+            homographies[this.thread.x][7],
+            1 // normalized homography
+          );
+          xps[i] = mapped[0];
+          yps[i] = mapped[1];
+        }
+        const x1 = [xs[0], ys[0]];
+        const x2 = [xs[1], ys[1]];
+        const x3 = [xs[2], ys[2]];
+        const x4 = [xs[3], ys[3]];
+        const x1p = [xps[0], yps[0]];
+        const x2p = [xps[1], yps[1]];
+        const x3p = [xps[2], yps[2]];
+        const x4p = [xps[3], yps[3]];
+
+        if (checkFourPointsConsistent(x1, x2, x3, x4, x1p, x2p, x3p, x4p) === 1) return 1;
+        return 0;
+      }, {
+        constants: {keyWidth, keyHeight},
+        pipeline: true,
+        output: [HOMOGRAPHY_DEFAULT_NUM_HYPOTHESES]
+      });
+      this.kernels.push(k);
+    }
+    const kernel = this.kernels[this.kernelIndex++];
+    const result = kernel(homographies, valid1);
+    return result;
+  }
+  _checkPointsValid(keypoints, querypoints, matches, queryIndexes) {
+    if (this.kernelIndex === this.kernels.length) {
+      // check original querypoints, keypoints consistent. i.e. four corresponding corners
+      const k = this.gpu.createKernel(function(keypoints, querypoints, matches, queryIndexes) {
+        const queryIndex1 = queryIndexes[this.thread.x][0];
+        const keyIndex1 = matches[queryIndex1];
+        const queryIndex2 = queryIndexes[this.thread.x][1];
+        const keyIndex2 = matches[queryIndex2];
+        const queryIndex3 = queryIndexes[this.thread.x][2];
+        const keyIndex3 = matches[queryIndex3];
+        const queryIndex4 = queryIndexes[this.thread.x][3];
+        const keyIndex4 = matches[queryIndex4];
+
+        const x1 = [keypoints[keyIndex1][1], keypoints[keyIndex1][2]];
+        const x2 = [keypoints[keyIndex2][1], keypoints[keyIndex2][2]];
+        const x3 = [keypoints[keyIndex3][1], keypoints[keyIndex3][2]];
+        const x4 = [keypoints[keyIndex4][1], keypoints[keyIndex4][2]];
+        const x1p = [querypoints[queryIndex1][1], querypoints[queryIndex1][2]];
+        const x2p = [querypoints[queryIndex2][1], querypoints[queryIndex2][2]];
+        const x3p = [querypoints[queryIndex3][1], querypoints[queryIndex3][2]];
+        const x4p = [querypoints[queryIndex4][1], querypoints[queryIndex4][2]];
+
+        if (checkFourPointsConsistent(x1, x2, x3, x4, x1p, x2p, x3p, x4p) === 1) return 1;
+        return 0;
+      }, {
+        pipeline: true,
+        output: [HOMOGRAPHY_DEFAULT_NUM_HYPOTHESES]
+      })
+      this.kernels.push(k);
+    }
+    const kernel = this.kernels[this.kernelIndex++];
+    const result = kernel(keypoints, querypoints, matches, queryIndexes);
+    return result;
+  }
+
+  // TODO, randomize inside the kernel
+  _generateRandomIndexes(matches) {
+    if (this.kernelIndex === this.kernels.length) {
       const randomize = this.gpu.createKernel(function(perm) {
         return perm[this.thread.y][this.thread.x];
       }, {
         pipeline: true,
         output: [4, HOMOGRAPHY_DEFAULT_NUM_HYPOTHESES]
       });
+      this.kernels.push(randomize);
+    }
+    const kernel = this.kernels[this.kernelIndex++];
 
+    const matchesArr = matches.toArray();
+    let count = 0;
+    for (let i = 0; i < matchesArr.length; i++) {
+      if (matchesArr[i] !== -1) count += 1;
+    }
+    const perm = [];
+    for (let i = 0; i <count; i++) {
+      perm[i] = i;
+    }
+    const randomizer = createRandomizer();
+    const queryIndexesData = [];
+    randomizer.arrayShuffle({arr: perm, sampleSize: perm.length});
+    for (let i = 0; i < HOMOGRAPHY_DEFAULT_NUM_HYPOTHESES; i++) {
+      randomizer.arrayShuffle({arr: perm, sampleSize: 4});
+      queryIndexesData.push([]);
+
+      for (let j = 0; j < 4; j++) {
+        let r = perm[j];
+        for (let k = 0; k < matchesArr.length; k++) {
+          if (matchesArr[k] === -1) continue;
+
+          if (r === 0) {
+            queryIndexesData[queryIndexesData.length-1].push(k);
+            break;
+          }
+          r -= 1;
+        }
+      }
+    }
+    const queryIndexes = kernel(queryIndexesData);
+    return queryIndexes;
+  }
+
+  _computeAllHomographies(keypoints, querypoints, matches, queryIndexes, valid1) {
+    if (this.kernelIndex === this.kernels.length) {
       // solve Ax = b with gaussian elimination(where x is the desired homography)
       //   ref: https://math.stackexchange.com/questions/494238/how-to-compute-homography-matrix-h-from-corresponding-points-2d-2d-planar-homog
-      const build = this.gpu.createKernel(function(keypoints, querypoints, matches, queryIndexes) {
+      const build = this.gpu.createKernel(function(keypoints, querypoints, matches, queryIndexes, valid1) {
+        if (valid1[this.thread.z] === 0) return -1;
+
         const queryIndex = queryIndexes[this.thread.z][Math.floor(this.thread.y/2)];
         const keyIndex = matches[queryIndex];
 
@@ -176,7 +385,9 @@ class Matcher {
         // reduce matrix row by row into euclidean form
         // important: use the row with maximum value in the leading index as the reduction row
         //   avoid the the leading value is zero
-        const operateRow = this.gpu.createKernel(function(A, index) {
+        const operateRow = this.gpu.createKernel(function(A, index, valid1) {
+          if (valid1[this.thread.z] === 0) return -1;
+
           let maxRow = index;
           let maxValue = Math.abs(A[this.thread.z][index][index]);
           for (let i = index+1; i < 8; i++) {
@@ -215,7 +426,9 @@ class Matcher {
       // back propagation the euclidean forms to find the X (i.e. homorgraphy)
       const backRows = [];
       for (let i = 0; i < 2; i++) {
-        const backRow = this.gpu.createKernel(function(A, X, index) {
+        const backRow = this.gpu.createKernel(function(A, X, index, valid1) {
+          if (valid1[this.thread.y] === 0) return -1;
+
           if (index === 0) { // last operation is special, just reduce number kernel, so put it here
             return -X[this.thread.y][this.thread.x] / A[this.thread.y][this.thread.x][this.thread.x];
           }
@@ -230,50 +443,20 @@ class Matcher {
         });
         backRows.push(backRow);
       }
-      this.kernels.push([randomize, build, operateRows, initializeX, backRows]);
+      this.kernels.push([build, operateRows, initializeX, backRows]);
     }
-    const [randomize, build, operateRows, initializeX, backRows] = this.kernels[this.kernelIndex++];
+    const [build, operateRows, initializeX, backRows] = this.kernels[this.kernelIndex++];
 
-    // TODO, randomize inside the kernel
-    const matchesArr = matches.toArray();
-    let count = 0;
-    for (let i = 0; i < matchesArr.length; i++) {
-      if (matchesArr[i] !== -1) count += 1;
-    }
-    const perm = [];
-    for (let i = 0; i <count; i++) {
-      perm[i] = i;
-    }
-    const randomizer = createRandomizer();
-    const queryIndexesData = [];
-    randomizer.arrayShuffle({arr: perm, sampleSize: perm.length});
-    for (let i = 0; i < HOMOGRAPHY_DEFAULT_NUM_HYPOTHESES; i++) {
-      randomizer.arrayShuffle({arr: perm, sampleSize: 4});
-      queryIndexesData.push([]);
-
-      for (let j = 0; j < 4; j++) {
-        let r = perm[j];
-        for (let k = 0; k < matchesArr.length; k++) {
-          if (matchesArr[k] === -1) continue;
-
-          if (r === 0) {
-            queryIndexesData[queryIndexesData.length-1].push(k);
-            break;
-          }
-          r -= 1;
-        }
-      }
-    }
-    const queryIndexes = randomize(queryIndexesData);
-    let M = build(keypoints, querypoints, matches, queryIndexes);
+    let M = build(keypoints, querypoints, matches, queryIndexes, valid1);
     for (let i = 0; i < 8; i++) {
-      M = operateRows[i%2](M, i);
+      M = operateRows[i%2](M, i, valid1);
     }
     let X = initializeX();
     for (let i = 8; i >= 0; i--) {
-      X = backRows[i%2](M, X, i);
+      X = backRows[i%2](M, X, i, valid1);
     }
     console.log("Homo: ", X.toArray());
+    return X;
   }
 
   _findHoughMatches(keypoints, querypoints, matches, queryWidth, queryHeight, keyWidth, keyHeight) {

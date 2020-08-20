@@ -2,11 +2,11 @@ const {ImageTarget} = require('./image-target/index.js');
 const {Detector} = require('./image-target/detectorGPU/detector.js');
 //const {Detector} = require('./image-target/detectorCPU/detector.js');
 const {Compiler} = require('./compiler.js');
-const {GPU} = require('gpu.js');
+const {GPU} = require('./gpu.js');
 
 class Controller {
   constructor(inputWidth, inputHeight) {
-    this.gpu = new GPU();
+    this.gpu = new GPU().get();
 
     this.inputWidth = inputWidth;
     this.inputHeight = inputHeight;
@@ -26,6 +26,7 @@ class Controller {
       [0, f, this.inputHeight / 2],
       [0, 0, 1]
     ];
+    console.log("proj transform", this.projectionTransform);
 
     this.projectionMatrix = _glProjectionMatrix({
       projectionTransform: this.projectionTransform,
