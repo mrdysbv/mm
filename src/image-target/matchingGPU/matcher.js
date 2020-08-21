@@ -16,6 +16,7 @@ const HOMOGRAPHY_DEFAULT_NUM_HYPOTHESES = 1064;
 //
 
 const HOMOGRAPHY_DEFAULT_CAUCHY_SCALE = 0.01;
+const HOMOGRAPHY_DISTANCE_THRESHOLD = 10 * 10; // TODO: should be relative to query size
 
 // first dimension of querypoints|keypoints: [isMaxima, x, y, scale, angle, descriptors x 666]
 
@@ -27,23 +28,34 @@ class Matcher {
     this.gpu = gpu;
     this.allKeypoints = this._buildKeypoints(this.keyframes);
     this.kernels = [];
+
+    this.allValidConstraints = null;
   }
 
   matchDetection(queryWidth, queryHeight, featurePoints, combinedExtremas, queryDescriptors) {
     this.kernelIndex = 0; // reset kernelIndex
 
     const querypoints = this._buildQuerypoints(combinedExtremas, queryDescriptors);
-    const querypointsArr = querypoints.toArray();
-    console.log("querypoints", querypointsArr);
+
+    if (this.allValidConstraints === null) {
+      let longest = 0;
+      for (let i = 0; i < this.allKeypoints.length; i++) {
+        longest = Math.max(longest, this.allKeypoints[i].dimensions[1]);
+      }
+      this.allValidConstraints = this._buildAllValidConstraints(longest, querypoints.dimensions[1]);
+    }
+
+    //const querypointsArr = querypoints.toArray();
+    //console.log("querypoints", querypointsArr);
 
     for (let i = 0; i < this.allKeypoints.length; i++) {
-      if (i > 0) break;
       const keypoints = this.allKeypoints[i];
-      const keypointsArr = keypoints.toArray();
-      console.log("keypoints points: ", keypoints, keypoints.toArray());
+      //const keypointsArr = keypoints.toArray();
       const hammingDistances = this._computeHamming(keypoints, querypoints);
-      console.log("hamming: ", hammingDistances.toArray());
-      const matches = this._findMatchesWithHamming(hammingDistances);
+      //console.log("hamming: ", hammingDistances.toArray());
+      const matches = this._findMatchesWithHamming(hammingDistances, this.allValidConstraints);
+
+      /*
       const matchesArr = matches.toArray();
       console.log("matches", matchesArr);
       {
@@ -57,43 +69,102 @@ class Matcher {
         }
         console.log("debug Matches", debugMatches);
       }
+      */
 
       const houghMatches = this._findHoughMatches(keypoints, querypoints, matches, queryWidth, queryHeight, this.keyframes[i].width, this.keyframes[i].height);
-      {
-        const houghMatchesArr = houghMatches.toArray();
-        const debugMatches = [];
-        let curqueryIndex = -1;
-        for (let j = 0; j < houghMatchesArr.length; j++) {
-          if (querypointsArr[j][0] != -1) curqueryIndex += 1;
-          if (houghMatchesArr[j] != -1) {
-            debugMatches.push({queryIndex: curqueryIndex, keyIndex: houghMatchesArr[j]});
-          }
-        }
-        console.log("houghMatches", houghMatches.toArray());
-        console.log("debug hough Matches", debugMatches);
-      }
 
       const homography = this._computeHomography(keypoints, querypoints, houghMatches, this.keyframes[i].width, this.keyframes[i].height);
+
+      const homographyInliers = this._computeInliers(homography, keypoints, querypoints);
+
+      const matches2 = this._findMatchesWithHamming(hammingDistances, homographyInliers);
+      const houghMatches2 = this._findHoughMatches(keypoints, querypoints, matches2, queryWidth, queryHeight, this.keyframes[i].width, this.keyframes[i].height);
+
+      const homography2 = this._computeHomography(keypoints, querypoints, houghMatches2, this.keyframes[i].width, this.keyframes[i].height);
+      const homographyInliers2 = this._computeInliers(homography2, keypoints, querypoints);
+
+      const inlierCount = this._computeInlierMatchesCount(homographyInliers2, houghMatches2);
+
+      console.log("homography2", homography2.toArray());
+      console.log("inliercount", inlierCount.toArray());
     }
+  }
+
+  _computeInlierMatchesCount(inliers, matches) {
+    if (this.kernelIndex === this.kernels.length) {
+      const k1 = this.gpu.createKernel(function(inliers, matches) {
+        let sum = 0;
+        for (let i = 0; i < this.constants.dimension; i++) {
+          if (matches[i] !== -1) {
+            if (inliers[i][matches[i]] === 1) sum += 1;
+          }
+        }
+        return sum;
+      }, {
+        constants: {dimension: inliers.dimensions[1]},
+        pipeline: true,
+        output: [1]
+      });
+      this.kernels.push(k1);
+    }
+    const k1 = this.kernels[this.kernelIndex++];
+    const r1 = k1(inliers, matches);
+    return r1;
+  }
+
+  _computeInliers(homography, keypoints, querypoints) {
+    if (this.kernelIndex === this.kernels.length) {
+      const k = this.gpu.createKernel(function(homography, keypoints, querypoints) {
+        if (querypoints[this.thread.y][0] === -1) return 0;
+
+        const {threshold} = this.constants;
+
+        const mapped = multiplyPointHomographyInhomogenous(keypoints[this.thread.x][1], keypoints[this.thread.x][2],
+          homography[0],
+          homography[1],
+          homography[2],
+          homography[3],
+          homography[4],
+          homography[5],
+          homography[6],
+          homography[7],
+          1 // normalized homography
+        );
+
+        const dx = mapped[0] - querypoints[this.thread.y][1];
+        const dy = mapped[1] - querypoints[this.thread.y][2];
+        const d2 = dx * dx + dy * dy;
+
+        if (d2 > threshold) return 0;
+        return 1;
+      }, {
+        constants: {threshold: HOMOGRAPHY_DISTANCE_THRESHOLD},
+        pipeline: true,
+        output: [keypoints.dimensions[1], querypoints.dimensions[1]],
+      });
+      this.kernels.push(k);
+    }
+    const kernel = this.kernels[this.kernelIndex++];
+    return kernel(homography, keypoints, querypoints);
   }
 
   _computeHomography(keypoints, querypoints, houghMatches, keyWidth, keyHeight) {
     const queryIndexes = this._generateRandomIndexes(houghMatches);
-    console.log("queryINdexes", queryIndexes.toArray());
+    ///console.log("queryINdexes", queryIndexes.toArray());
 
     const valid1 = this._checkPointsValid(keypoints, querypoints, houghMatches, queryIndexes);
-    console.log("valid1: ", valid1.toArray());
+    //console.log("valid1: ", valid1.toArray());
 
     const homographies = this._computeAllHomographies(keypoints, querypoints, houghMatches, queryIndexes, valid1);
 
     const valid2 = this._checkHomographiesValid(homographies, keyWidth, keyHeight, valid1);
-    console.log("valid2: ", valid2.toArray());
+    //console.log("valid2: ", valid2.toArray());
 
     const costs = this._computeHomographiesCosts(homographies, keypoints, querypoints, houghMatches, valid2);
-    console.log("h cost", costs.toArray());
+    //console.log("h cost", costs.toArray());
 
     const finalH = this._getBestHomography(homographies, costs, valid1, valid2);
-    console.log("final H", finalH.toArray());
+    //console.log("final H", finalH.toArray());
 
     return finalH;
   }
@@ -172,7 +243,7 @@ class Matcher {
 
       // combine costs
       const k2 = this.gpu.createKernel(function(costs, valid2){
-        if (valid2[this.thread.y] === 0) return 10000000; // large number
+        if (valid2[this.thread.x] === 0) return 10000000; // large number
 
         const {queryDimension} = this.constants;
         let sumCost = 0;
@@ -189,8 +260,9 @@ class Matcher {
     }
     const kernels = this.kernels[this.kernelIndex++];
     const result1 = kernels[0](homographies, keypoints, querypoints, matches, valid2);
-    console.log("all costs", result1.toArray());
+    //console.log("all costs", result1.toArray());
     const result2 = kernels[1](result1, valid2);
+    //console.log("sum costs", result2.toArray());
     return result2;
   }
 
@@ -455,7 +527,7 @@ class Matcher {
     for (let i = 8; i >= 0; i--) {
       X = backRows[i%2](M, X, i, valid1);
     }
-    console.log("Homo: ", X.toArray());
+    //console.log("Homo: ", X.toArray());
     return X;
   }
 
@@ -629,21 +701,25 @@ class Matcher {
     return houghMatches;
   }
 
-  _findMatchesWithHamming(hammingDistances) {
+  _findMatchesWithHamming(hammingDistances, constraints) {
     if (this.kernelIndex === this.kernels.length) {
-      const kernel = this.gpu.createKernel(function(hammingDistances) {
+      const kernel = this.gpu.createKernel(function(hammingDistances, constraints) {
         const {featuresLength, hammingThreshold} = this.constants;
 
-        let best1 = 0;
+        let best1 = -1;
         let best2 = -1;
-        for (let i = 1; i < featuresLength; i++) {
-          if (hammingDistances[this.thread.x][i] < hammingDistances[this.thread.x][best1]) {
-            best2 = best1;
-            best1 = i;
-          } else if (best2 === -1 || hammingDistances[this.thread.x][i] < hammingDistances[this.thread.x][best2]) {
-            best2 = i;
+        for (let i = 0; i < featuresLength; i++) {
+          if (constraints[this.thread.x][i] === 1 && hammingDistances[this.thread.x][i] < 10000) {
+            if (best1 === -1 || hammingDistances[this.thread.x][i] < hammingDistances[this.thread.x][best1]) {
+              best2 = best1;
+              best1 = i;
+            } else if (best2 === -1 || hammingDistances[this.thread.x][i] < hammingDistances[this.thread.x][best2]) {
+              best2 = i;
+            }
           }
         }
+        if (best1 === -1) return -1;
+        if (best2 === -1) return best1;
 
         if (hammingDistances[this.thread.x][best1] / hammingDistances[this.thread.x][best2] < hammingThreshold) {
           return best1;
@@ -657,7 +733,7 @@ class Matcher {
       this.kernels.push(kernel);
     }
     const kernel = this.kernels[this.kernelIndex++];
-    const result = kernel(hammingDistances);
+    const result = kernel(hammingDistances, constraints);
     return result;
   }
 
@@ -688,6 +764,7 @@ class Matcher {
     const result = kernel(keypoints, querypoints);
     return result;
   }
+
 
   // first dimension: [isMaxima, x, y, scale, angle, descriptors x 666]
   //   isMaxima:  -1 means not extrema, 1 means maxima, 0 means minima
@@ -750,6 +827,16 @@ class Matcher {
       results.push(result);
     }
     return results;
+  }
+
+  _buildAllValidConstraints(keypointsLength, querypointsLength) {
+    const kernel = this.gpu.createKernel(function() {
+      return 1;
+    }, {
+      pipeline: true,
+      output: [keypointsLength, querypointsLength],
+    });
+    return kernel();
   }
 }
 
