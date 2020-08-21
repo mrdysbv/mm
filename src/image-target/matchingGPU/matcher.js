@@ -1,19 +1,17 @@
+const {Matrix, inverse} = require('ml-matrix');
 const {createRandomizer} = require('../utils/randomizer.js');
 
 const INLIER_THRESHOLD = 3;
 //const MIN_NUM_INLIERS = 8;  //default
 const MIN_NUM_INLIERS = 6;
-const CLUSTER_MAX_POP = 8;
 const HAMMING_THRESHOLD = 0.7;
 
 const HOUGH_NUM_ANGLE_BINS = 12;
 const HOUGH_NUM_SCALE_BINS = 10;
 const HOUGH_NUM_XY_BINS = 5;
 
-//const HOMOGRAPHY_DEFAULT_NUM_HYPOTHESES = 1024;
-const HOMOGRAPHY_DEFAULT_NUM_HYPOTHESES = 1064;
+const HOMOGRAPHY_DEFAULT_NUM_HYPOTHESES = 1024;
 //const HOMOGRAPHY_DEFAULT_MAX_TRIALS = 1064;
-//
 
 const HOMOGRAPHY_DEFAULT_CAUCHY_SCALE = 0.01;
 const HOMOGRAPHY_DISTANCE_THRESHOLD = 10 * 10; // TODO: should be relative to query size
@@ -48,7 +46,9 @@ class Matcher {
     //const querypointsArr = querypoints.toArray();
     //console.log("querypoints", querypointsArr);
 
+    let result = this._initializeResult();
     for (let i = 0; i < this.allKeypoints.length; i++) {
+      if (i > 0) break;
       const keypoints = this.allKeypoints[i];
       //const keypointsArr = keypoints.toArray();
       const hammingDistances = this._computeHamming(keypoints, querypoints);
@@ -73,6 +73,21 @@ class Matcher {
 
       const houghMatches = this._findHoughMatches(keypoints, querypoints, matches, queryWidth, queryHeight, this.keyframes[i].width, this.keyframes[i].height);
 
+      if (false) {
+        const matchesArr = houghMatches.toArray();
+        const debugMatches = [];
+        const querypointsArr = querypoints.toArray();
+        let curqueryIndex = -1;
+        for (let j = 0; j < matchesArr.length; j++) {
+          if (querypointsArr[j][0] != -1) curqueryIndex += 1;
+          if (matchesArr[j] != -1) {
+            debugMatches.push({queryIndex: curqueryIndex, keyIndex: matchesArr[j]});
+          }
+        }
+        console.log("debug Matches", debugMatches);
+      }
+
+
       const homography = this._computeHomography(keypoints, querypoints, houghMatches, this.keyframes[i].width, this.keyframes[i].height);
 
       const homographyInliers = this._computeInliers(homography, keypoints, querypoints);
@@ -85,9 +100,65 @@ class Matcher {
 
       const inlierCount = this._computeInlierMatchesCount(homographyInliers2, houghMatches2);
 
-      console.log("homography2", homography2.toArray());
-      console.log("inliercount", inlierCount.toArray());
+      //console.log("homography2", homography2.toArray());
+      //console.log("inliercount", inlierCount.toArray());
+
+      result = this._updateResult(result, i, homography2, inlierCount);
+      //console.log("resut", i, result.toArray());
     }
+    const finalResult = result.toArray();
+    if (finalResult[0] === -1) return null;
+
+    const finalH = [
+      [finalResult[2], finalResult[3], finalResult[4]],
+      [finalResult[5], finalResult[6], finalResult[7]],
+      [finalResult[8], finalResult[9], 1],
+    ];
+    return finalH;
+  }
+
+  _initializeResult() {
+    if (this.kernelIndex === this.kernels.length) {
+      const k = this.gpu.createKernel(function() {
+        return -1;
+      }, {
+        pipeline: true,
+        output: [10],  // [keyframe, inlier count, H1, .... H8]
+      });
+      this.kernels.push(k);
+    }
+    return this.kernels[this.kernelIndex++]();
+  }
+
+  _updateResult(result, keyframeIndex, homography, inlierCount) {
+    if (this.kernelIndex === this.kernels.length) {
+      const k1 = this.gpu.createKernel(function(result, keyframeIndex, homography, inlierCount) {
+        if (inlierCount[0] <= result[1] || inlierCount[0] < this.constants.minInliers) {
+          return result[this.thread.x];
+        }
+
+        if (this.thread.x === 0) return keyframeIndex;
+        if (this.thread.x === 1) return inlierCount[0];
+        return homography[this.thread.x - 2];
+      }, {
+        constants: {minInliers: MIN_NUM_INLIERS},
+        pipeline: true,
+        output: [10],  // [keyframe, inlier count, H1, .... H8]
+      });
+
+      // TODO: stupid. can't pipeline itself. better way?
+      const k2 = this.gpu.createKernel(function(result) {
+        return result[this.thread.x];
+      }, {
+        pipeline: true,
+        output: [10],  // [keyframe, inlier count, H1, .... H8]
+      });
+      this.kernels.push([k1, k2]);
+    }
+    const [k1, k2] = this.kernels[this.kernelIndex++];
+    const r1 = k1(result, keyframeIndex, homography, inlierCount);
+    const r2 = k2(r1);
+    return r2;
   }
 
   _computeInlierMatchesCount(inliers, matches) {
@@ -201,7 +272,7 @@ class Matcher {
     }
     const kernels = this.kernels[this.kernelIndex++];
     const result1 = kernels[0](costs);
-    console.log("sumcost", result1.toArray());
+    //console.log("sumcost", result1.toArray());
     const result2 = kernels[1](homographies, result1);
     return result2;
   }
@@ -353,6 +424,74 @@ class Matcher {
   // TODO, randomize inside the kernel
   _generateRandomIndexes(matches) {
     if (this.kernelIndex === this.kernels.length) {
+
+      const k1 = this.gpu.createKernel(function(matches) {
+        let matchCount = 0;
+        for (let i = 0; i < this.constants.queryLength; i++) {
+          if (matches[i] !== -1) matchCount += 1;
+        }
+        if (matchCount < 4) return -1;
+        if (this.thread.x === 4) return matchCount;
+
+        return Math.floor(Math.random() * (matchCount - this.thread.x));
+      }, {
+        constants: {queryLength: matches.dimensions[0]},
+        pipeline: true,
+        output: [5, HOMOGRAPHY_DEFAULT_NUM_HYPOTHESES]
+      });
+
+      const k2 = this.gpu.createKernel(function(matches, randomNumbers) {
+        const matchCount = randomNumbers[this.thread.y][4];
+        if (matchCount < 4) return -1;
+
+        let picked = [-1, -1, -1, -1];
+        for (let i = 0; i < 4; i++) {
+          let k = randomNumbers[this.thread.y][i];
+
+          for (let j = 0; j < i; j++) {
+            if (k >= picked[j]) k += 1; // picked is sorted, otherwise not correct
+          }
+
+          let insertPosition = i;
+          for (let j2 = i-1; j2 >= 0; j2--) {
+            if (picked[j2] > k) insertPosition = j2;
+          }
+          for (let j3 = i-1; j3 >= insertPosition; j3--) {
+            picked[j3+1] = picked[j3];
+          }
+          picked[insertPosition] = k
+        }
+
+        let queryIndexes = [-1, -1, -1, -1];
+        let cur = 0;
+        let curQueryIndex = -1;
+        for (let i = 0; i < this.constants.queryLength; i++) {
+          if (matches[i] !== -1 && cur < 4) {
+            curQueryIndex += 1;
+            if (picked[cur] === curQueryIndex) {
+              queryIndexes[cur] = i;
+              cur += 1;
+            }
+          }
+        }
+        return queryIndexes[this.thread.x];
+      }, {
+        constants: {queryLength: matches.dimensions[0]},
+        pipeline: true,
+        output: [4, HOMOGRAPHY_DEFAULT_NUM_HYPOTHESES]
+      });
+      this.kernels.push([k1, k2]);
+    }
+
+    const [k1, k2] = this.kernels[this.kernelIndex++];
+    const r1 = k1(matches);
+    const randomNumbers = k2(matches, r1);
+    return randomNumbers;
+  }
+
+  /*
+  __generateRandomIndexes(matches) {
+    if (this.kernelIndex === this.kernels.length) {
       const randomize = this.gpu.createKernel(function(perm) {
         return perm[this.thread.y][this.thread.x];
       }, {
@@ -395,6 +534,7 @@ class Matcher {
     const queryIndexes = kernel(queryIndexesData);
     return queryIndexes;
   }
+  */
 
   _computeAllHomographies(keypoints, querypoints, matches, queryIndexes, valid1) {
     if (this.kernelIndex === this.kernels.length) {
