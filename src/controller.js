@@ -20,6 +20,9 @@ class Controller {
     this.trackingMissCount = 0;
     this.onUpdate = onUpdate;
 
+    this.processHandler = null;
+    this.workerHandler = null;
+
     this.maxTrack = 1; // technically can tracking multiple. but too slow in practice
     this.imageTargetStates = [];
 
@@ -101,6 +104,11 @@ class Controller {
     this.tracker.track(input, [[0,0,0,0], [0,0,0,0], [0,0,0,0]], 0);
   }
 
+  stopProcessVideo() {
+    clearInterval(this.processHandler);
+    clearInterval(this.workerHandler);
+  }
+
   /**
    * continue process the video
    * There currently two separate threads:
@@ -126,7 +134,7 @@ class Controller {
     }
 
     let processing = false;
-    setInterval(() => {
+    this.processHandler = setInterval(() => {
       if (!processing) {
         processing = true;
 
@@ -147,7 +155,7 @@ class Controller {
     }, 10);
 
     let workerRunning = false;
-    setInterval(async () => {
+    this.workerHandler = setInterval(async () => {
       if (!workerRunning) {
         workerRunning = true;
 

@@ -105,6 +105,11 @@ AFRAME.registerSystem('mindar-system', {
       else if (data.type === 'updateMatrix') {
         const {targetIndex, worldMatrix} = data;
 
+        if (worldMatrix !== null) {
+          globalDetected(targetIndex);
+          this.controller.stopProcessVideo();
+        }
+
         for (let i = 0; i < this.anchorEntities.length; i++) {
           if (this.anchorEntities[i].targetIndex === targetIndex) {
             this.anchorEntities[i].el.updateWorldMatrix(worldMatrix);
@@ -124,7 +129,7 @@ AFRAME.registerSystem('mindar-system', {
     const newCam = new AFRAME.THREE.PerspectiveCamera(fov, newRatio, near, far);
 
     const camera = container.getElementsByTagName("a-camera")[0];
-    camera.getObject3D('camera').projectionMatrix = newCam.projectionMatrix;
+    //camera.getObject3D('camera').projectionMatrix = newCam.projectionMatrix;
 
     this.video.style.top = (-(vh - container.clientHeight) / 2) + "px";
     this.video.style.left = (-(vw - container.clientWidth) / 2) + "px";
@@ -142,6 +147,7 @@ AFRAME.registerSystem('mindar-system', {
 
     await this.controller.dummyRun(this.video);
     container.querySelector(".mindar-loading-overlay").style.display = "none";
+    container.querySelector(".mindar-scan-overlay").style.display = "block";
 
     this.controller.processVideo(this.video);
     this.processReady = true;

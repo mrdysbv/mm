@@ -1,0 +1,233 @@
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Anti-smoking Campaign</title>
+
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/jquery@3.5.0/dist/jquery.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/hammer.js/2.0.8/hammer.min.js" integrity="sha512-UXumZrZNiOwnTcZSHLOfcTs0aos2MzBWHXOHOuB0J/R44QB0dwY5JgfbvljXcklVf65Gc4El6RjZ+lnwd2az2g==" crossorigin="anonymous"></script>
+    
+    <script src="../dist/mindar.js"></script>
+
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css">
+
+    <script>
+      const textures = [];
+
+      const globalDetected = (targetIndex) => {
+        //console.log("global detected", targetIndex);
+        $(".mindar-scan-overlay").hide();
+        showForm();
+      };
+
+      const showForm = () => {
+        $("#lung-form").show();
+      }
+
+      const showLung = (ans) => {
+        $("#lung-form").removeClass("animate__zoomIn");
+        $("#lung-form").addClass("animate__zoomOut");
+        $("#lung-form").hide();
+        $("#lungModal").attr("visible", true);
+
+        console.log("show lung", ans);
+        const lungEl = document.querySelector('#lungModal');
+
+        const textureLoader = new THREE.TextureLoader();
+        const path = './assets/lung-project/lungsbad/textures/Lungs_LowPoly_Mat_Base_Color' + (ans+1) + '.png';
+
+        textureLoader.load(path, (texture) => {
+          texture.encoding = THREE.sRGBEncoding;
+
+          lungEl.getObject3D('mesh').traverse((o) => {
+            if (o.isMesh) {
+              //console.log("material", o.material);
+              o.material.roughness = 5.0;
+              o.material.map = texture;
+            }
+          });
+        }); 
+      };
+
+      $(document).ready(function() {
+        let started = false;
+        $("#ans0").click(() => {showLung(0)});
+        $("#ans1").click(() => {showLung(1)});
+        $("#ans2").click(() => {showLung(2)});
+        $("#ans3").click(() => {showLung(3)});
+        $("#ans4").click(() => {showLung(4)});
+        $("#ans5").click(() => {showLung(5)});
+      });
+
+      AFRAME.registerComponent("foo",{
+          init:function() {
+            var element = document.querySelector('body');
+            var model = document.querySelector('#lungModal');
+            var hammertime = new Hammer(element);
+            var pinch = new Hammer.Pinch(); // Pinch is not by default in the recognisers
+            hammertime.add(pinch); // add it to the Manager instance
+
+            hammertime.on('pan', (ev) => {
+              let rotation = model.getAttribute("rotation")
+              switch(ev.direction) {
+                case 2:
+                  rotation.y = rotation.y + 4
+                  break;
+                case 4:
+                  rotation.y = rotation.y - 4
+                  break;
+                case 8:
+                  //rotation.x = rotation.x + 4
+                  break;
+                case 16:
+                  //rotation.x = rotation.x - 4
+                  break;
+                default:
+                  break;
+              }
+              model.setAttribute("rotation", rotation)
+            });
+
+           hammertime.on("pinch", (ev) => {
+              let scale = {x:ev.scale, y:ev.scale, z:ev.scale}
+              model.setAttribute("scale", scale);
+              model.setAttribute("position", "0 " + (-0.2*ev.scale) + " -1");
+          });
+        }
+      });
+
+    </script>
+
+    <style>
+      body {
+        margin: 0;
+      }
+
+      .lung-form {
+        position: absolute;
+        left: 5%;
+        right: 5%;
+        top: 5%;
+        bottom: 5%;
+        background: black;
+        opacity: 0.8;
+
+        text-align: center;
+        margin: 0;
+        padding: 20px;
+        z-index: 3;
+      }
+      .lung-form .title {
+        display: block;
+        margin-left: auto; 
+        margin-right: auto; 
+        margin-bottom: 15px;
+        font-size: 2.0em;
+        color: white;
+        width: 80%;
+      }
+      .lung-form .answers {
+        display: block;
+        margin-left: auto; 
+        margin-right: auto; 
+        margin-bottom: 15px;
+        color: white;
+        width: 100%;
+      }
+      .lung-form .answers .ans {
+        width: 100%;
+        margin-bottom: 20px;
+        font-size: 20px;
+        cursor: pointer;
+      }
+
+      .example-container {
+        overflow: hidden;
+        position: absolute;
+        width: 100%;
+        height: 100%;
+      }
+      .example-container .mindar-loading-overlay {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 0;
+        bottom: 0;
+        background: white;
+        opacity: 0.5;
+        z-index: 2;
+      }
+      .example-container .mindar-loading-overlay .content {
+        font-size: 30px;
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+      }
+
+      .example-container .mindar-scan-overlay {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 0;
+        bottom: 0;
+        background: transparent;
+        z-index: 2;
+      }
+
+      .example-container .mindar-scan-overlay .content {
+        font-size: 30px;
+        position: absolute;
+        left: 20%;
+        top: 20%;
+        transform: translate(-10%, 20%);
+      }
+      .example-container .mindar-scan-overlay .content img {
+        width: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="example-container">
+      <div id="lung-form" class="lung-form animate__animated animate__zoomIn" style="display: none">
+        <div class="title">你的煙齡是多少？</div>
+        <div class="answers">
+          <button id="ans0" class="ans">從不吸煙</button>
+          <button id="ans1" class="ans">0-5年</button>
+          <button id="ans2" class="ans">5-10年</button>
+          <button id="ans3" class="ans">10-15年</button>
+          <button id="ans4" class="ans">15-20年</button>
+          <button id="ans5" class="ans">20年以上</button>
+        </div>
+      </div>
+
+      <div class="mindar-loading-overlay">
+        <div class="content">Loading...</div>
+      </div>
+
+      <div id="scanOverlay" class="mindar-scan-overlay" style="display: none">
+        <div class="content">
+          <img src="./assets/lung-project/scan.png"/>
+        </div>
+      </div>
+
+      <a-scene mindar="imageTargetSrc: ./assets/lung-project/targets.mind; showStats: false; autoStart: true" embedded color-space="sRGB" renderer="colorManagement: true, physicallyCorrectLights" vr-mode-ui="enabled: false" device-orientation-permission-ui="enabled: false">
+        <a-assets>
+          <a-asset-item id="avatarModel" src="./assets/lung-project/lungsbad/scene.gltf"></a-asset-item>
+          <img src="./assets/lung-project/lungsbad/textures/Lungs_LowPoly_Mat_Base_Color1.png"></img>
+          <img src="./assets/lung-project/lungsbad/textures/Lungs_LowPoly_Mat_Base_Color2.png"></img>
+          <img src="./assets/lung-project/lungsbad/textures/Lungs_LowPoly_Mat_Base_Color3.png"></img>
+          <img src="./assets/lung-project/lungsbad/textures/Lungs_LowPoly_Mat_Base_Color4.png"></img>
+          <img src="./assets/lung-project/lungsbad/textures/Lungs_LowPoly_Mat_Base_Color5.png"></img>
+          <img src="./assets/lung-project/lungsbad/textures/Lungs_LowPoly_Mat_Base_Color6.png"></img>
+        </a-assets>
+
+        <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+
+        <a-gltf-model foo id="lungModal" visible="false" rotation="0 0 0 " position="0 -0.2 -1" scale="1 1 1" src="#avatarModel" animation-mixer
+          _animation="property: rotation; to: 0 360 0; dur: 10000; easing: linear; loop: true;"
+          >
+      </a-scene>
+    </div>
+  </body>
+</html>
