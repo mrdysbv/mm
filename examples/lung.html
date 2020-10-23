@@ -12,12 +12,105 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css">
 
     <script>
-      const textures = [];
+      let textures = [];
+      let metallicTextures = [];
+      let material1 = null;
+      let material2 = null;
+
+      const initialize = async () => {
+        // load all textures
+        const getTextures = () => new Promise((resolve, reject) => {
+          const textureLoader = new THREE.TextureLoader();
+          let textures;
+          THREE.DefaultLoadingManager.onLoad = () => resolve(textures);
+          textures = [
+            "./assets/lung-project/lungsbad/textures/Lungs_LowPoly_Mat_Base_Color1.png",
+            "./assets/lung-project/lungsbad/textures/Lungs_LowPoly_Mat_Base_Color2.png",
+            "./assets/lung-project/lungsbad/textures/Lungs_LowPoly_Mat_Base_Color3.png",
+            "./assets/lung-project/lungsbad/textures/Lungs_LowPoly_Mat_Base_Color4.png",
+            "./assets/lung-project/lungsbad/textures/Lungs_LowPoly_Mat_Base_Color5.png",
+            "./assets/lung-project/lungsbad/textures/Lungs_LowPoly_Mat_Base_Color6.png",
+            "./assets/lung-project/lungsbad/textures/Lungs_LowPoly_Mat_Normal_OpenGL1.png",
+            "./assets/lung-project/lungsbad/textures/Lungs_LowPoly_Mat_Normal_OpenGL1.png",
+            "./assets/lung-project/lungsbad/textures/Lungs_LowPoly_Mat_Normal_OpenGL1.png",
+            "./assets/lung-project/lungsbad/textures/Lungs_LowPoly_Mat_Normal_OpenGL1.png",
+            "./assets/lung-project/lungsbad/textures/Lungs_LowPoly_Mat_Normal_OpenGL1.png",
+            "./assets/lung-project/lungsbad/textures/Lungs_LowPoly_Mat_Normal_OpenGL6.png",
+          ].map(filename=>textureLoader.load(filename));
+        });
+        const allTextures = await getTextures();
+        allTextures.forEach((texture) => {
+          texture.encoding = THREE.sRGBEncoding;
+        });
+        for (let i = 0; i < 6; i++) {
+          textures.push(allTextures[i]);
+          metallicTextures.push(allTextures[6+i]);
+        }
+
+
+        // prepare lung model to support materials update 
+        const lungEl = document.querySelector('#lungModal');
+        lungEl.getObject3D('mesh').traverse((o) => {
+          //console.log("o", o);
+          if (o.isMesh) {
+            material1 = o.material.clone();
+            material1.roughness = 5.0;
+            material1.transparent = true;
+
+            material2 = o.material.clone();
+            material2.roughness = 5.0;
+            material2.transparent = true;
+            //material2.normalMap = metallicTextures[0]; 
+            //material2.normalMap = metallicTextures[5]; 
+
+            o.geometry.clearGroups();
+            o.geometry.addGroup(0, Infinity, 0);
+            o.geometry.addGroup(0, Infinity, 1);
+            o.material = [material1, material2];
+          }
+        });
+
+        playAnimation(() => {
+          showForm();
+        });
+      }
+
+      const playAnimation = (done) => {
+        const lungEl = document.querySelector('#lungModal');
+        material2.opacity = 0;
+        lungEl.setAttribute("visible", true);
+        material1.map = textures[0];
+
+        let currentTexture = 1;
+        material2.map = textures[currentTexture];
+
+        let opacity = 0;
+        const handler = setInterval(() => {
+          opacity += 0.01;
+          material2.opacity = opacity;
+          if (opacity >= 1) {
+            if (currentTexture === textures.length-1) {
+              clearInterval(handler);
+
+              lungEl.setAttribute("visible", false);
+              done();
+              return;
+            }
+            currentTexture += 1;
+            material1.map = textures[currentTexture-1];
+            material1.normalMap = metallicTextures[currentTexture-1]; 
+            material2.map = textures[currentTexture];
+            material2.normalMap = metallicTextures[currentTexture]; 
+            material2.opacity = 0;
+            opacity = 0;
+          }
+        }, 15);
+      }
 
       const globalDetected = (targetIndex) => {
         //console.log("global detected", targetIndex);
         $(".mindar-scan-overlay").hide();
-        showForm();
+        initialize();
       };
 
       const showForm = () => {
@@ -30,23 +123,13 @@
         $("#lung-form").hide();
         $("#lungModal").attr("visible", true);
 
-        console.log("show lung", ans);
         const lungEl = document.querySelector('#lungModal');
 
         const textureLoader = new THREE.TextureLoader();
         const path = './assets/lung-project/lungsbad/textures/Lungs_LowPoly_Mat_Base_Color' + (ans+1) + '.png';
 
-        textureLoader.load(path, (texture) => {
-          texture.encoding = THREE.sRGBEncoding;
-
-          lungEl.getObject3D('mesh').traverse((o) => {
-            if (o.isMesh) {
-              //console.log("material", o.material);
-              o.material.roughness = 5.0;
-              o.material.map = texture;
-            }
-          });
-        }); 
+        material2.map = textures[ans];
+        material2.normalMap = metallicTextures[ans]; 
       };
 
       $(document).ready(function() {
@@ -57,6 +140,10 @@
         $("#ans3").click(() => {showLung(3)});
         $("#ans4").click(() => {showLung(4)});
         $("#ans5").click(() => {showLung(5)});
+
+        setTimeout(() => {
+          //globalDetected();
+        }, 1000)
       });
 
       AFRAME.registerComponent("foo",{
@@ -222,6 +309,7 @@
           <img src="./assets/lung-project/lungsbad/textures/Lungs_LowPoly_Mat_Base_Color6.png"></img>
         </a-assets>
 
+        <a-light type="point" color="white" position="0 3 0"></a-light>
         <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
 
         <a-gltf-model foo id="lungModal" visible="false" rotation="0 0 0 " position="0 -0.2 -1" scale="1 1 1" src="#avatarModel" animation-mixer
