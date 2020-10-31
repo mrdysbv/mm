@@ -1,0 +1,165 @@
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Anti-smoking Campaign</title>
+
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/jquery@3.5.0/dist/jquery.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/hammer.js/2.0.8/hammer.min.js" integrity="sha512-UXumZrZNiOwnTcZSHLOfcTs0aos2MzBWHXOHOuB0J/R44QB0dwY5JgfbvljXcklVf65Gc4El6RjZ+lnwd2az2g==" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.5.0/jszip.min.js" integrity="sha512-y3o0Z5TJF1UsKjs/jS2CDkeHN538bWsftxO9nctODL5W40nyXIbs0Pgyu7//icrQY9m6475gLaVr39i/uh/nLA==" crossorigin="anonymous"></script>
+    
+    <script src="../dist/mindar.js"></script>
+
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css">
+
+    <script>
+      const frames = [];
+
+      $(document).ready(function() {
+        //globalDetected();
+        const sceneEl = document.querySelector('a-scene');
+        const arSystem = sceneEl.systems['mindar-system'];
+        startDownloadAssets(() => {
+          arSystem.start();
+        })
+      });
+      const globalDetected = (targetIndex) => {
+        $(".mindar-scan-overlay").hide();
+        play();
+      };
+
+      const startDownloadAssets = (done) => {
+        console.log("start download...");
+
+        const xhr = new XMLHttpRequest();
+        xhr.responseType = "arraybuffer";
+        xhr.onprogress = (e) => {
+          if (e.lengthComputable) {
+            const percent = Math.round((e.loaded / e.total) * 100);
+            console.log("download progress...", percent);
+          };
+        };
+        xhr.open('GET', './assets/hku-project/render/frames.zip', true);
+        xhr.onload = (e) => {
+          console.log("asset ready...", xhr.response);
+          JSZip.loadAsync(xhr.response).then((zip) => {
+            const zipEntries = [];
+            zip.forEach((relativePath, zipEntry, index) => {
+              if (relativePath.startsWith("_")) return;
+              zipEntries.push(zipEntry);
+            });
+
+            let doneCount = 0;
+            zipEntries.forEach((zipEntry, index) => {
+              //console.log("entry: ", index, zipEntry);
+              zipEntry.async("blob").then((blob) => {
+                const url = URL.createObjectURL(blob);
+                const img = new Image();
+                img.src = url;
+
+                const texture = new THREE.Texture();
+                texture.image = img;
+                texture.encoding = THREE.sRGBEncoding;
+                texture.needsUpdate = true;
+
+                frames[index] = texture;
+                doneCount += 1;
+                if (doneCount === zipEntries.length) {
+                  done(frames);
+                }
+              });
+            });
+          });
+        };
+        xhr.send(null);
+      };
+
+      const play = () => {
+        const el = document.querySelector('#image-frame');
+        el.setAttribute("visible", true);
+        el.getObject3D('mesh').traverse((o) => {
+          o.material.map = frames[0]; 
+          let current = 0;
+          setInterval(() => {
+            current = (current + 1) % frames.length;
+            o.material.map = frames[current]; 
+          }, 100);
+        });
+      }
+    </script>
+
+    <style>
+      body {
+        margin: 0;
+      }
+      .example-container {
+        overflow: hidden;
+        position: absolute;
+        width: 100%;
+        height: 100%;
+      }
+      .example-container .mindar-loading-overlay {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 0;
+        bottom: 0;
+        background: white;
+        opacity: 0.5;
+        z-index: 2;
+      }
+      .example-container .mindar-loading-overlay .content {
+        font-size: 30px;
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+      }
+
+      .example-container .mindar-scan-overlay {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 0;
+        bottom: 0;
+        background: transparent;
+        z-index: 2;
+      }
+
+      .example-container .mindar-scan-overlay .content {
+        font-size: 30px;
+        position: absolute;
+        left: 20%;
+        top: 20%;
+        transform: translate(-10%, 20%);
+      }
+      .example-container .mindar-scan-overlay .content img {
+        width: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="example-container">
+      <div class="mindar-loading-overlay">
+        <div class="content">Loading...</div>
+      </div>
+
+      <div id="scanOverlay" class="mindar-scan-overlay" style="display: none">
+        <div class="content">
+          <img src="./assets/hku-project/scan.png"/>
+        </div>
+      </div>
+
+      <a-scene mindar="imageTargetSrc: ./assets/hku-project/targets.mind; showStats: false; autoStart: false" embedded color-space="sRGB" renderer="colorManagement: true, physicallyCorrectLights" vr-mode-ui="enabled: false" device-orientation-permission-ui="enabled: false">
+         <a-assets>
+          <img id="my-image" src="./assets/hku-project/render/hku0001.png">
+        </a-assets>
+
+        <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+        <a-light type="point" color="white" position="0 3 0"></a-light>
+
+        <a-image id="image-frame" visible="false" position="0 0 -3" width=7.68 height=4.5 material="alphaTest: 0.5" src="#my-image"/>
+      </a-scene>
+    </div>
+  </body>
+</html>
