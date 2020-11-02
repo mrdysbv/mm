@@ -132,7 +132,26 @@
         material2.normalMap = metallicTextures[ans]; 
       };
 
+      const checkIOS = () => {
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+        const isSafari = navigator.userAgent.indexOf('Safari') !== -1 && navigator.userAgent.indexOf('Chrome') === -1;
+        if (isIOS && !isSafari) {
+          return false;
+        }
+        return  true;
+      };
+
       $(document).ready(function() {
+        if (!checkIOS()) {
+          $(".browser-support-overlay").show();
+          $(".mindar-loading-overlay").hide();
+          return;
+        }
+
+        const sceneEl = document.querySelector('a-scene');
+        const arSystem = sceneEl.systems['mindar-system'];
+        arSystem.start();
+
         let started = false;
         $("#ans0").click(() => {showLung(0)});
         $("#ans1").click(() => {showLung(1)});
@@ -272,6 +291,28 @@
       .example-container .mindar-scan-overlay .content img {
         width: 100%;
       }
+
+      .example-container .browser-support-overlay {
+        display: none;
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 0;
+        bottom: 0;
+        background: transparent;
+        z-index: 2;
+      }
+
+      .example-container .browser-support-overlay .content {
+        font-size: 30px;
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+      }
+      .example-container .browser-support-overlay .content img {
+        width: 100%;
+      }
     </style>
   </head>
   <body>
@@ -292,13 +333,17 @@
         <div class="content">Loading...</div>
       </div>
 
+      <div class="browser-support-overlay">
+        <div class="content">Safari browser is required for viewing this page.</div>
+      </div>
+
       <div id="scanOverlay" class="mindar-scan-overlay" style="display: none">
         <div class="content">
           <img src="./assets/lung-project/scan.png"/>
         </div>
       </div>
 
-      <a-scene mindar="imageTargetSrc: ./assets/lung-project/targets.mind; showStats: false; autoStart: true" embedded color-space="sRGB" renderer="colorManagement: true, physicallyCorrectLights" vr-mode-ui="enabled: false" device-orientation-permission-ui="enabled: false">
+      <a-scene mindar="imageTargetSrc: ./assets/lung-project/targets.mind; showStats: false; autoStart: false" embedded color-space="sRGB" renderer="colorManagement: true, physicallyCorrectLights" vr-mode-ui="enabled: false" device-orientation-permission-ui="enabled: false">
         <a-assets>
           <a-asset-item id="avatarModel" src="./assets/lung-project/lungsbad/scene.gltf"></a-asset-item>
           <img src="./assets/lung-project/lungsbad/textures/Lungs_LowPoly_Mat_Base_Color1.png"></img>
