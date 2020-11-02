@@ -134,8 +134,7 @@
 
       const checkIOS = () => {
         const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
-        const isSafari = navigator.userAgent.indexOf('Safari') !== -1 && navigator.userAgent.indexOf('Chrome') === -1;
-        if (isIOS && !isSafari) {
+        if (isIOS && !navigator.mediaDevices) { // good enough?
           return false;
         }
         return  true;
