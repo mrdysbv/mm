@@ -13,6 +13,7 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css">
 
     <script>
+      let replayButton;
       const frames = [];
 
       const checkIOS = () => {
@@ -35,7 +36,13 @@
         const arSystem = sceneEl.systems['mindar-system'];
         startDownloadAssets(() => {
           arSystem.start();
+          //globalDetected();
         })
+
+        replayButton = document.querySelector("#replayButton");
+        replayButton.addEventListener("click", () => {
+          play();
+        });
       });
       const globalDetected = (targetIndex) => {
         $(".mindar-scan-overlay").hide();
@@ -43,8 +50,6 @@
       };
 
       const startDownloadAssets = (done) => {
-        console.log("start download...");
-
         const xhr = new XMLHttpRequest();
         xhr.responseType = "arraybuffer";
         xhr.onprogress = (e) => {
@@ -89,16 +94,55 @@
       };
 
       const play = () => {
+        const hat = document.querySelector('#hatModel');
         const el = document.querySelector('#image-frame');
-        el.setAttribute("visible", true);
-        el.getObject3D('mesh').traverse((o) => {
-          o.material.map = frames[0]; 
-          let current = 0;
-          setInterval(() => {
-            current = (current + 1) % frames.length;
-            o.material.map = frames[current]; 
-          }, 100);
-        });
+        const _play = () => {
+          hat.setAttribute("visible", true);
+
+          // ugly hack...
+          if ( hat.components['animation-mixer']._tick) {
+            hat.components['animation-mixer'].tick = hat.components['animation-mixer']._tick;
+          }
+          hat.components['animation-mixer'].stopAction();
+          hat.components['animation-mixer'].playAction();
+
+          el.setAttribute("visible", true);
+          el.getObject3D('mesh').traverse((o) => {
+            o.material.map = frames[0]; 
+            let current = 0;
+            const handler = setInterval(() => {
+              current = (current + 1) % frames.length;
+              if (current === 0) {
+                clearInterval(handler);
+                hat.components['animation-mixer']._tick = hat.components['animation-mixer'].tick;
+                hat.components['animation-mixer'].tick = () => {};
+                replayButton.style.visibility = "visible";
+                return;
+              }
+              o.material.map = frames[current]; 
+            }, 100);
+          });
+        }
+
+        hat.setAttribute("visible", false);
+        el.setAttribute("visible", false);
+        replayButton.style.visibility = "hidden";
+
+        const flashingPlane = document.querySelector("#flashing-plane");
+        let flashingCount = 0;
+        const flashingHandler = setInterval(() => {
+          if (flashingCount % 2 === 0) {
+            flashingPlane.style.visibility = "hidden";
+          } else {
+            flashingPlane.style.visibility = "visible";
+          }
+          flashingCount += 1;
+          if (flashingCount === 30) {
+            clearInterval(flashingHandler);
+            flashingPlane.style.visibility = "hidden";
+            _play();
+          }
+        }, 10);
       }
     </script>
 
@@ -173,12 +217,39 @@
         width: 100%;
       }
 
+      #replayButton {
+        visibility: hidden;
+        background: transparent;
+        border: none;
+        position: absolute;
+        right: 10;
+        bottom: 10;
+        z-index: 9999;
+      }
+      #replayButton img {
+        width: 20vw;
+      }
+
+      .flashing-plane {
+        visibility: hidden;
+        background: #f5894a;
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 0;
+        bottom: 0;
+        z-index: 10;
+      }
     </style>
   </head>
   <body>
     <div class="example-container">
+      <button id="replayButton"><img src="./assets/hku-project/reloading.png"/></button>
       <div class="mindar-loading-overlay">
         <div class="content">Loading...</div>
+      </div>
+
+      <div id="flashing-plane" class="flashing-plane">
       </div>
 
       <div class="browser-support-overlay">
@@ -193,13 +264,20 @@
 
       <a-scene mindar="imageTargetSrc: ./assets/hku-project/targets.mind; showStats: false; autoStart: false" embedded color-space="sRGB" renderer="colorManagement: true, physicallyCorrectLights" vr-mode-ui="enabled: false" device-orientation-permission-ui="enabled: false">
          <a-assets>
+          <a-asset-item id="hatModelAsset" src="./assets/hku-project/hat/scene.gltf"></a-asset-item>
           <img id="my-image" src="./assets/hku-project/render/hku0001.png">
         </a-assets>
 
-        <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
-        <a-light type="point" color="white" position="0 3 0"></a-light>
 
-        <a-image id="image-frame" visible="false" position="0 0 -3" width=7.68 height=4.5 material="alphaTest: 0.5" src="#my-image"/>
+        <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+        <!-- Default lighting injected by A-Frame. -->
+        <a-entity light="type: ambient; color: #BBB"></a-entity>
+        <a-entity light="type: spot; angle: 30; intensity: 0.7"></a-entity>
+        <a-entity light="type: directional; color: #FFF; intensity: 0.6" position="-0.5 1 1"></a-entity>
+
+        <a-image id="image-frame" visible="false" position="0 0 -3" rotation="0 0 0" width=7.20 height=12.80 material="alphaTest: 0.5" src="#my-image"></a-image>
+        <a-gltf-model id="hatModel" visible="false" rotation="0 0 0 " position="0 0 -2" scale="1 1 1" src="#hatModelAsset" animation-mixer="clampWhenFinished: true;"></a-gltf-model>
+
       </a-scene>
     </div>
   </body>
