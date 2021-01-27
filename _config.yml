@@ -22,7 +22,7 @@ title: mind-ar-js
 description: >- # this means to ignore newlines until "baseurl:"
   Official documentation for mind-ar-js, a web augmented reality framework.
   augmented image target. webgl. tensorflowJS
-baseurl: "" # the subpath of your site, e.g. /blog
+baseurl: "/mind-ar-js" # the subpath of your site, e.g. /blog
 url: "" # the base hostname & protocol for your site, e.g. http://example.com
 github_username:  hiukim
 
